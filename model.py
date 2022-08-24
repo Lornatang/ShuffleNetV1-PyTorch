@@ -11,47 +11,60 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-from typing import Any
+from typing import Any, List
 
 import torch
 from torch import Tensor
 from torch import nn
 
 __all__ = [
-    "SqueezeNet",
-    "squeezenet",
+    "ShuffleNetV1",
+    "shufflenet_v1_x0_5", "shufflenet_v1_x1_0", "shufflenet_v1_x1_5", "shufflenet_v1_x2_0",
 ]
 
 
-class SqueezeNet(nn.Module):
+class ShuffleNetV1(nn.Module):
 
     def __init__(
             self,
-            dropout: float = 0.5,
+            repeats_times: List[int],
+            stages_out_channels: List[int],
+            groups: int = 8,
             num_classes: int = 1000,
     ) -> None:
-        super(SqueezeNet, self).__init__()
-        self.features = nn.Sequential(
-            nn.Conv2d(3, 96, (7, 7), (2, 2), (0, 0)),
+        super(ShuffleNetV1, self).__init__()
+        in_channels = stages_out_channels[0]
+
+        self.first_conv = nn.Sequential(
+            nn.Conv2d(3, in_channels, (3, 3), (2, 2), (1, 1), bias=False),
+            nn.BatchNorm2d(in_channels),
             nn.ReLU(True),
-            nn.MaxPool2d((3, 3), (2, 2), ceil_mode=True),
-            Fire(96, 16, 64, 64),
-            Fire(128, 16, 64, 64),
-            Fire(128, 32, 128, 128),
-            nn.MaxPool2d((3, 3), (2, 2), ceil_mode=True),
-            Fire(256, 32, 128, 128),
-            Fire(256, 48, 192, 192),
-            Fire(384, 48, 192, 192),
-            Fire(384, 64, 256, 256),
-            nn.MaxPool2d((3, 3), (2, 2), ceil_mode=True),
-            Fire(512, 64, 256, 256),
         )
+        self.maxpool = nn.MaxPool2d((3, 3), (2, 2), (1, 1))
+
+        features = []
+        for state_repeats_times_index in range(len(repeats_times)):
+            out_channels = stages_out_channels[state_repeats_times_index + 1]
+
+            for i in range(repeats_times[state_repeats_times_index]):
+                stride = 2 if i == 0 else 1
+                first_group = state_repeats_times_index == 0 and i == 0
+                features.append(
+                    ShuffleNetV1Unit(
+                        in_channels,
+                        out_channels,
+                        stride,
+                        groups,
+                        first_group,
+                    )
+                )
+                in_channels = out_channels
+        self.features = nn.Sequential(*features)
+
+        self.globalpool = nn.AvgPool2d((7, 7))
 
         self.classifier = nn.Sequential(
-            nn.Dropout(dropout),
-            nn.Conv2d(512, num_classes, (1, 1), (1, 1), (0, 0)),
-            nn.ReLU(True),
-            nn.AdaptiveAvgPool2d((1, 1))
+            nn.Linear(stages_out_channels[-1], num_classes, bias=False),
         )
 
         # Initialize neural network weights
@@ -64,52 +77,125 @@ class SqueezeNet(nn.Module):
 
     # Support torch.script function
     def _forward_impl(self, x: Tensor) -> Tensor:
-        out = self.features(x)
-        out = self.classifier(out)
+        out = self.first_conv(x)
+        out = self.maxpool(out)
+        out = self.features(out)
+        out = self.globalpool(out)
         out = torch.flatten(out, 1)
+        out = self.classifier(out)
 
         return out
 
     def _initialize_weights(self) -> None:
-        for module in self.modules():
+        for name, module in self.named_modules():
             if isinstance(module, nn.Conv2d):
-                torch.nn.init.kaiming_uniform_(module.weight)
+                if 'first' in name:
+                    nn.init.normal_(module.weight, 0, 0.01)
+                else:
+                    nn.init.normal_(module.weight, 0, 1.0 / module.weight.shape[1])
                 if module.bias is not None:
-                    torch.nn.init.constant_(module.bias, 0)
+                    nn.init.constant_(module.bias, 0)
+            elif isinstance(module, nn.BatchNorm2d):
+                nn.init.constant_(module.weight, 1)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0.0001)
+                nn.init.constant_(module.running_mean, 0)
+            elif isinstance(module, nn.BatchNorm1d):
+                nn.init.constant_(module.weight, 1)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0.0001)
+                nn.init.constant_(module.running_mean, 0)
+            elif isinstance(module, nn.Linear):
+                nn.init.normal_(module.weight, 0, 0.01)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0)
 
 
-class Fire(nn.Module):
+class ShuffleNetV1Unit(nn.Module):
     def __init__(
             self,
             in_channels: int,
-            squeeze_channels: int,
-            expand1x1_channels: int,
-            expand3x3_channels: int,
+            out_channels: int,
+            stride: int,
+            groups: int,
+            first_group: bool = False,
     ) -> None:
-        super().__init__()
-        self.in_channels = in_channels
-        self.squeeze = nn.Conv2d(in_channels, squeeze_channels, (1, 1), (1, 1), (0, 0))
-        self.squeeze_activation = nn.ReLU(True)
-        self.expand1x1 = nn.Conv2d(squeeze_channels, expand1x1_channels, (1, 1), (1, 1), (0, 0))
-        self.expand1x1_activation = nn.ReLU(True)
-        self.expand3x3 = nn.Conv2d(squeeze_channels, expand3x3_channels, (3, 3), (1, 1), (1, 1))
-        self.expand3x3_activation = nn.ReLU(True)
+        super(ShuffleNetV1Unit, self).__init__()
+        self.stride = stride
+        self.groups = groups
+        hidden_channels = out_channels // 4
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = self.squeeze(x)
-        out = self.squeeze_activation(out)
+        if stride == 2:
+            out_channels -= in_channels
+            self.branch_proj = nn.AvgPool2d((3, 3), (2, 2), (1, 1))
 
-        expand1x1 = self.expand1x1(out)
-        expand1x1 = self.expand1x1_activation(expand1x1)
-        expand3x3 = self.expand3x3(out)
-        expand3x3 = self.expand3x3_activation(expand3x3)
+        self.branch_main_1 = nn.Sequential(
+            # pw
+            nn.Conv2d(in_channels, hidden_channels, (1, 1), (1, 1), (0, 0), groups=1 if first_group else groups,
+                      bias=False),
+            nn.BatchNorm2d(hidden_channels),
+            nn.ReLU(True),
+            # dw
+            nn.Conv2d(hidden_channels, hidden_channels, (3, 3), (stride, stride), (1, 1), groups=hidden_channels,
+                      bias=False),
+            nn.BatchNorm2d(hidden_channels),
+        )
+        self.branch_main_2 = nn.Sequential(
+            # pw-linear
+            nn.Conv2d(hidden_channels, out_channels, (1, 1), (1, 1), (0, 0), groups=groups, bias=False),
+            nn.BatchNorm2d(out_channels),
+        )
 
-        out = torch.cat([expand1x1, expand3x3], 1)
+        self.relu = nn.ReLU(True)
+
+    def channel_shuffle(self, x):
+        batch_size, channels, height, width = x.data.size()
+        assert channels % self.groups == 0
+        group_channels = channels // self.groups
+
+        out = x.reshape(batch_size, group_channels, self.groups, height, width)
+        out = out.permute(0, 2, 1, 3, 4)
+        out = out.reshape(batch_size, channels, height, width)
 
         return out
 
+    def forward(self, x: Tensor) -> Tensor:
+        identify = x
 
-def squeezenet(**kwargs: Any) -> SqueezeNet:
-    model = SqueezeNet(**kwargs)
+        out = self.branch_main_1(x)
+        out = self.channel_shuffle(out)
+        out = self.branch_main_2(out)
+
+        if self.stride == 2:
+            branch_proj = self.branch_proj(x)
+            out = self.relu(out)
+            out = torch.cat([branch_proj, out], 1)
+            return out
+        else:
+            out = torch.add(out, identify)
+            out = self.relu(out)
+            return out
+
+
+def shufflenet_v1_x0_5(**kwargs: Any) -> ShuffleNetV1:
+    model = ShuffleNetV1([4, 8, 4], [16, 192, 384, 768], 8, **kwargs)
+
+    return model
+
+
+def shufflenet_v1_x1_0(**kwargs: Any) -> ShuffleNetV1:
+    model = ShuffleNetV1([4, 8, 4], [24, 384, 768, 1536], 8, **kwargs)
+
+    return model
+
+
+def shufflenet_v1_x1_5(**kwargs: Any) -> ShuffleNetV1:
+    model = ShuffleNetV1([4, 8, 4], [24, 576, 1152, 2304], 8, **kwargs)
+
+    return model
+
+
+def shufflenet_v1_x2_0(**kwargs: Any) -> ShuffleNetV1:
+    model = ShuffleNetV1([4, 8, 4], [48, 768, 1536, 3072], 8, **kwargs)
 
     return model

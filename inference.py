@@ -19,8 +19,9 @@ import cv2
 import torch
 from PIL import Image
 from torch import nn
+import numpy as np
 from torchvision.transforms import Resize, ConvertImageDtype, Normalize
-
+from torch.nn import functional as F_torch
 import imgproc
 import model
 from utils import load_state_dict
@@ -46,30 +47,24 @@ def choice_device(device_type: str) -> torch.device:
 
 
 def build_model(model_arch_name: str, model_num_classes: int, device: torch.device) -> [nn.Module, nn.Module]:
-    squeezenet_model = model.__dict__[model_arch_name](num_classes=model_num_classes)
-    squeezenet_model = squeezenet_model.to(device=device, memory_format=torch.channels_last)
+    shufflenet_v1_model = model.__dict__[model_arch_name](num_classes=model_num_classes)
+    shufflenet_v1_model = shufflenet_v1_model.to(device=device)
 
-    return squeezenet_model
+    return shufflenet_v1_model
 
 
 def preprocess_image(image_path: str, image_size: int, device: torch.device) -> torch.Tensor:
     image = cv2.imread(image_path)
 
-    # BGR to RGB
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-    # OpenCV convert PIL
-    image = Image.fromarray(image)
-
     # Resize to 224
-    image = Resize([image_size, image_size])(image)
+    image = cv2.resize(image, [image_size, image_size], interpolation=cv2.INTER_LINEAR)
+    # HWC to CHW
+    image = np.transpose(image, [2, 0, 1])
+    image = np.ascontiguousarray(image)
     # Convert image data to pytorch format data
-    tensor = imgproc.image_to_tensor(image, False, False).unsqueeze_(0)
+    tensor = torch.from_numpy(image).float().unsqueeze_(0)
     # Convert a tensor image to the given ``dtype`` and scale the values accordingly
     tensor = ConvertImageDtype(torch.float)(tensor)
-    # Normalize a tensor image with mean and standard deviation.
-    tensor = Normalize(args.model_mean_parameters, args.model_std_parameters)(tensor)
-
     # Transfer tensor channel image format data to CUDA device
     tensor = tensor.to(device=device, memory_format=torch.channels_last, non_blocking=True)
 
@@ -83,21 +78,22 @@ def main():
     device = choice_device(args.device_type)
 
     # Initialize the model
-    squeezenet_model = build_model(args.model_arch_name, args.model_num_classes, device)
+    shufflenet_v1_model = build_model(args.model_arch_name, args.model_num_classes, device)
     print(f"Build `{args.model_arch_name}` model successfully.")
 
     # Load model weights
-    squeezenet_model, _, _, _, _, _ = load_state_dict(squeezenet_model, args.model_weights_path)
+    shufflenet_v1_model, _, _, _, _, _ = load_state_dict(shufflenet_v1_model, args.model_weights_path)
     print(f"Load `{args.model_arch_name}` model weights `{os.path.abspath(args.model_weights_path)}` successfully.")
+    # print(shufflenet_v1_model.state_dict())
 
     # Start the verification mode of the model.
-    squeezenet_model.eval()
+    shufflenet_v1_model.eval()
 
     tensor = preprocess_image(args.image_path, args.image_size, device)
 
     # Inference
     with torch.no_grad():
-        output = squeezenet_model(tensor)
+        output = shufflenet_v1_model(tensor)
 
     # Calculate the five categories with the highest classification probability
     prediction_class_index = torch.topk(output, k=5).indices.squeeze(0).tolist()
@@ -111,12 +107,12 @@ def main():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_arch_name", type=str, default="squeezenet")
+    parser.add_argument("--model_arch_name", type=str, default="shufflenet_v1_x1_0")
     parser.add_argument("--model_mean_parameters", type=list, default=[0.485, 0.456, 0.406])
     parser.add_argument("--model_std_parameters", type=list, default=[0.229, 0.224, 0.225])
     parser.add_argument("--class_label_file", type=str, default="./data/ImageNet_1K_labels_map.txt")
     parser.add_argument("--model_num_classes", type=int, default=1000)
-    parser.add_argument("--model_weights_path", type=str, default="./results/pretrained_models/SqueezeNet-ImageNet_1K-145ddc1c.pth.tar")
+    parser.add_argument("--model_weights_path", type=str, default="./results/pretrained_models/ShuffleNetV1_x1_0-ImageNet_1K-7a092cde.pth.tar")
     parser.add_argument("--image_path", type=str, default="./figure/n01440764_36.JPEG")
     parser.add_argument("--image_size", type=int, default=224)
     parser.add_argument("--device_type", type=str, default="cpu", choices=["cpu", "cuda"])
