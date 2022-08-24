@@ -28,17 +28,15 @@ model_names = sorted(
 
 
 def build_model() -> nn.Module:
-    squeezenet_model = model.__dict__[config.model_arch_name](num_classes=config.model_num_classes)
-    squeezenet_model = squeezenet_model.to(device=config.device, memory_format=torch.channels_last)
+    shufflenet_v1_model = model.__dict__[config.model_arch_name](num_classes=config.model_num_classes)
+    shufflenet_v1_model = shufflenet_v1_model.to(device=config.device, memory_format=torch.channels_last)
 
-    return squeezenet_model
+    return shufflenet_v1_model
 
 
 def load_dataset() -> CUDAPrefetcher:
     test_dataset = ImageDataset(config.test_image_dir,
                                 config.image_size,
-                                config.model_mean_parameters,
-                                config.model_std_parameters,
                                 "Test")
     test_dataloader = DataLoader(test_dataset,
                                  batch_size=config.batch_size,
@@ -56,16 +54,16 @@ def load_dataset() -> CUDAPrefetcher:
 
 def main() -> None:
     # Initialize the model
-    squeezenet_model = build_model()
+    shufflenet_v1_model = build_model()
     print(f"Build `{config.model_arch_name}` model successfully.")
 
     # Load model weights
-    squeezenet_model, _, _, _, _, _ = load_state_dict(squeezenet_model, config.model_weights_path)
+    shufflenet_v1_model, _, _, _, _, _ = load_state_dict(shufflenet_v1_model, config.model_weights_path)
     print(f"Load `{config.model_arch_name}` "
           f"model weights `{os.path.abspath(config.model_weights_path)}` successfully.")
 
     # Start the verification mode of the model.
-    squeezenet_model.eval()
+    shufflenet_v1_model.eval()
 
     # Load test dataloader
     test_prefetcher = load_dataset()
@@ -97,7 +95,7 @@ def main() -> None:
             batch_size = images.size(0)
 
             # Inference
-            output = squeezenet_model(images)
+            output = shufflenet_v1_model(images)
 
             # measure accuracy and record loss
             top1, top5 = accuracy(output, target, topk=(1, 5))

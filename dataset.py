@@ -51,7 +51,7 @@ class ImageDataset(Dataset):
             and the verification data set is not for data enhancement.
     """
 
-    def __init__(self, image_dir: str, image_size: int, mean: list, std: list, mode: str) -> None:
+    def __init__(self, image_dir: str, image_size: int, mode: str) -> None:
         super(ImageDataset, self).__init__()
         # Iterate over all image paths
         self.image_file_paths = glob(f"{image_dir}/*/*")
@@ -63,26 +63,23 @@ class ImageDataset(Dataset):
 
         if self.mode == "Train":
             # Use PyTorch's own data enhancement to enlarge and enhance data
-            self.pre_transform = transforms.Compose([
+            self.transform = transforms.Compose([
                 transforms.RandomResizedCrop(self.image_size),
                 TrivialAugmentWide(),
                 transforms.RandomRotation([0, 270]),
                 transforms.RandomHorizontalFlip(0.5),
                 transforms.RandomVerticalFlip(0.5),
+                imgproc.ToBGRTensor(),
             ])
         elif self.mode == "Valid" or self.mode == "Test":
             # Use PyTorch's own data enhancement to enlarge and enhance data
-            self.pre_transform = transforms.Compose([
-                transforms.Resize(256),
+            self.transform = transforms.Compose([
+                imgproc.OpencvResize(256),
                 transforms.CenterCrop([self.image_size, self.image_size]),
+                imgproc.ToBGRTensor(),
             ])
         else:
             raise "Unsupported data read type. Please use `Train` or `Valid` or `Test`"
-
-        self.post_transform = transforms.Compose([
-            transforms.ConvertImageDtype(torch.float),
-            transforms.Normalize(mean, std)
-        ])
 
     def __getitem__(self, batch_index: int) -> [torch.Tensor, int]:
         image_dir, image_name = self.image_file_paths[batch_index].split(self.delimiter)[-2:]
@@ -101,14 +98,7 @@ class ImageDataset(Dataset):
         image = Image.fromarray(image)
 
         # Data preprocess
-        image = self.pre_transform(image)
-
-        # Convert image data into Tensor stream format (PyTorch).
-        # Note: The range of input and output is between [0, 1]
-        tensor = imgproc.image_to_tensor(image, False, False)
-
-        # Data postprocess
-        tensor = self.post_transform(tensor)
+        tensor = self.transform(image)
 
         return {"image": tensor, "target": target}
 

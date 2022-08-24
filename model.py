@@ -118,11 +118,12 @@ class ShuffleNetV1Unit(nn.Module):
             out_channels: int,
             stride: int,
             groups: int,
-            first_group: bool = False,
+            first_groups: bool = False,
     ) -> None:
         super(ShuffleNetV1Unit, self).__init__()
         self.stride = stride
         self.groups = groups
+        self.first_groups = first_groups
         hidden_channels = out_channels // 4
 
         if stride == 2:
@@ -131,7 +132,7 @@ class ShuffleNetV1Unit(nn.Module):
 
         self.branch_main_1 = nn.Sequential(
             # pw
-            nn.Conv2d(in_channels, hidden_channels, (1, 1), (1, 1), (0, 0), groups=1 if first_group else groups,
+            nn.Conv2d(in_channels, hidden_channels, (1, 1), (1, 1), (0, 0), groups=1 if first_groups else groups,
                       bias=False),
             nn.BatchNorm2d(hidden_channels),
             nn.ReLU(True),

@@ -13,11 +13,13 @@
 # ==============================================================================
 import random
 from typing import Any
-from torch import Tensor
-from numpy import ndarray
+
 import cv2
 import numpy as np
 import torch
+from PIL import Image
+from numpy import ndarray
+from torch import Tensor
 from torchvision.transforms import functional as F_vision
 
 __all__ = [
@@ -251,3 +253,39 @@ def random_vertically_flip(
         images = images[0]
 
     return images
+
+
+class OpencvResize(object):
+
+    def __init__(self, image_size: int):
+        self.image_size = image_size
+
+    def __call__(self, image):
+        assert isinstance(image, Image.Image)
+        image = np.asarray(image)
+        image = image[:, :, ::-1]
+        image = np.ascontiguousarray(image)
+        height, width, _ = image.shape
+        if height < width:
+            target_size = (int(self.image_size / height * width + 0.5), self.image_size)
+        else:
+            target_size = (self.image_size, int(self.image_size / width * height + 0.5))
+        image = cv2.resize(image, target_size, interpolation=cv2.INTER_LINEAR)
+        image = image[:, :, ::-1]  # 2 RGB
+        image = np.ascontiguousarray(image)
+        image = Image.fromarray(image)
+        return image
+
+
+class ToBGRTensor(object):
+
+    def __call__(self, image: np.ndarray | Image.Image):
+        assert isinstance(image, (np.ndarray, Image.Image))
+        if isinstance(image, Image.Image):
+            image = np.asarray(image)
+        image = image[:, :, ::-1]
+        image = np.transpose(image, [2, 0, 1])
+        image = np.ascontiguousarray(image)
+        image = torch.from_numpy(image).float()
+
+        return image
